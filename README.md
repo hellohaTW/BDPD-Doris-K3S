@@ -36,7 +36,9 @@ Version: doris-4.0.5-rc01-59de8c4c524
 FE 與 BE 之間走 **FQDN 模式**（`enable_fqdn_mode = true`）互相註冊，
 所以兩邊都各自掛一個 headless Service，Pod 重建換 IP 也不會掉出叢集。
 
-## 快速開始
+## 兩種用法
+
+### A. 沒有叢集 —— 用本 repo 的模擬節點（需要 Docker）
 
 ```bash
 ./scripts/01-stage-artifacts.sh   # 下載 k3s + 離線 image（第一次約 5 分鐘）
@@ -51,6 +53,47 @@ FE 與 BE 之間走 **FQDN 模式**（`enable_fqdn_mode = true`）互相註冊�
 ./scripts/99-teardown.sh                # 只砍節點與資料
 ./scripts/99-teardown.sh --purge-stage  # 連下載的素材一起砍
 ```
+
+主機需要 Docker、能開 `--privileged`，約 4 vCPU / 8GB+ RAM / 15GB+ 可用磁碟。
+主機自己是哪個發行版不重要，22.04 是被模擬出來的那一層。
+
+### B. 已經有 k3s / Kubernetes 叢集
+
+```bash
+./scripts/deploy-to-existing-cluster.sh --dry-run       # 先看會套用什麼
+./scripts/deploy-to-existing-cluster.sh --yes --verify  # 部署 + smoke test
+```
+
+用本機 `kubectl` 的目前 context，部署前會印出 context 要你確認，並檢查 StorageClass 是否存在。
+
+也可以完全不用腳本 —— **`k8s/` 底下就是可以直接 `kubectl apply -f k8s/` 的預設值**
+（`standard` profile 的 render 結果與 `k8s/` 逐字節相同，有驗證過）。
+
+> **部署前**每台要跑 BE 的節點都要先做，不然 BE 起不來：
+> ```bash
+> sysctl -w vm.max_map_count=2000000   # 沒設 start_be.sh 直接 exit
+> swapoff -a                            # BE 拒絕在有 swap 的機器上啟動
+> ```
+
+### 設定
+
+全部是環境變數，`scripts/env.sh` 有完整清單。`DORIS_PROFILE` 只是換一組預設值：
+`standard`（一般叢集，`k8s/` 的預設）或 `sandbox`（離線側載 + 無 `CAP_SYS_RESOURCE`）。
+
+```bash
+DORIS_NAMESPACE=analytics DORIS_STORAGE_CLASS=gp3 \
+DORIS_BE_REPLICAS=3 DORIS_BE_MEM_LIMIT=32Gi DORIS_BE_MEM_CONF=24G \
+  ./scripts/deploy-to-existing-cluster.sh --yes
+```
+
+常用的有：`DORIS_NAMESPACE`、`DORIS_STORAGE_CLASS`、`DORIS_FE_REPLICAS` /
+`DORIS_BE_REPLICAS`、`DORIS_FE_XMX` / `DORIS_FE_MEM_LIMIT`、`DORIS_BE_MEM_CONF` /
+`DORIS_BE_MEM_LIMIT`、`DORIS_FE_META_SIZE` / `DORIS_BE_STORAGE_SIZE`、`DORIS_VERSION`。
+
+PVC 大小在 StatefulSet 建好之後改不了，要調請先砍掉重建。
+
+> 如果是 **AI agent** 在操作這個 repo，請直接讀 [`AGENTS.md`](AGENTS.md)——
+> 裡面有決策樹、旋鈕表、錯誤訊息對照表和除錯指令。
 
 ## 連線方式
 
@@ -70,8 +113,12 @@ FE 與 BE 之間走 **FQDN 模式**（`enable_fqdn_mode = true`）互相註冊�
 | `docker/Dockerfile` | Ubuntu 22.04 節點 image（k3s、iptables、mysql-client…） |
 | `docker/node-entrypoint.sh` | 節點開機前置：cgroup、`/dev/kmsg`、sysctl、ulimit，最後 exec k3s |
 | `docker/runc-no-oom-adj.sh` | runc wrapper，見下方「受限環境的處理」 |
-| `scripts/env.sh` | 版本與連接埠設定，全部可用環境變數覆蓋 |
-| `scripts/0*.sh` | 依序執行的四個步驟 |
+| `scripts/env.sh` | 所有設定與 profile，全部可用環境變數覆蓋 |
+| `scripts/lib/render.sh` | 把設定套進 manifest（附驗證，對不上會直接失敗） |
+| `scripts/lib/smoke-test.sql` | 共用的 SQL 驗證腳本 |
+| `scripts/0*.sh` `99-*.sh` | 路線 A（模擬節點）的流程 |
+| `scripts/deploy-to-existing-cluster.sh` | 路線 B（既有叢集） |
+| `AGENTS.md` | 給 AI agent 的操作手冊：決策樹、旋鈕表、錯誤對照、除錯指令 |
 | `k8s/10-configmaps.yaml` | `fe.conf` / `be.conf` |
 | `k8s/20-fe.yaml` | FE headless Service + NodePort + StatefulSet |
 | `k8s/30-be.yaml` | BE headless Service + StatefulSet |

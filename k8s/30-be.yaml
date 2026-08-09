@@ -44,7 +44,7 @@ spec:
         # 先在這裡等 FE 起來，避免 CrashLoopBackOff 的雜訊。
         - name: wait-for-fe
           image: apache/doris:be-4.0.5-slim
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
           command:
             - bash
             - -c
@@ -63,7 +63,7 @@ spec:
       containers:
         - name: be
           image: apache/doris:be-4.0.5-slim
-          imagePullPolicy: Never
+          imagePullPolicy: IfNotPresent
           command:
             - bash
             - -c
@@ -82,12 +82,13 @@ spec:
             - name: FE_QUERY_PORT
               value: "9030"
             # start_be.sh 的前置檢查寫死要 ulimit -n >= 60000，
-            # 但這個沙箱的 nofile hard limit 只有 20000，怎麼調都過不了。
-            # 這個檢查同時涵蓋 vm.max_map_count 與 swap，兩者我們已經在節點上處理好
-            # (max_map_count=2000000、無 swap)，所以跳過是安全的；
+            # 沒有 CAP_SYS_RESOURCE 的環境 nofile 開不到那麼大，怎麼調都過不了。
+            # 設成 "true" 會跳過該檢查（同時涵蓋 vm.max_map_count 與 swap，
+            # 所以這兩項必須自己先在節點上處理好：max_map_count=2000000、無 swap），
             # 實際的 fd 需求改由 be.conf 的 min_file_descriptor_number 控制。
+            # sandbox profile 會把它設成 "true"。
             - name: SKIP_CHECK_ULIMIT
-              value: "true"
+              value: "false"
           ports:
             - name: be
               containerPort: 9060
