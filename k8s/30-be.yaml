@@ -1,0 +1,142 @@
+# Doris BE (Backend)：資料儲存與查詢執行
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: doris-be
+  namespace: doris
+  labels:
+    app: doris-be
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: doris-be
+  ports:
+    - name: be
+      port: 9060
+    - name: webserver
+      port: 8040
+    - name: heartbeat
+      port: 9050
+    - name: brpc
+      port: 8060
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: doris-be
+  namespace: doris
+spec:
+  serviceName: doris-be
+  replicas: 1
+  selector:
+    matchLabels:
+      app: doris-be
+  template:
+    metadata:
+      labels:
+        app: doris-be
+    spec:
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        # BE 的 entrypoint 找不到 master FE 就會直接 exit 1，
+        # 先在這裡等 FE 起來，避免 CrashLoopBackOff 的雜訊。
+        - name: wait-for-fe
+          image: apache/doris:be-4.0.5-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              until mysql --connect-timeout 2 -h doris-fe.$POD_NAMESPACE.svc.cluster.local \
+                    -P 9030 -uroot --batch -e 'show frontends;' >/dev/null 2>&1; do
+                echo "waiting for FE ..."
+                sleep 5
+              done
+              echo "FE is up"
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+      containers:
+        - name: be
+          image: apache/doris:be-4.0.5-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - exec /opt/apache-doris/be_entrypoint.sh doris-fe.$(POD_NAMESPACE).svc.cluster.local
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONFIGMAP_MOUNT_PATH
+              value: /etc/doris
+            - name: FE_QUERY_PORT
+              value: "9030"
+            # start_be.sh 的前置檢查寫死要 ulimit -n >= 60000，
+            # 沒有 CAP_SYS_RESOURCE 的環境 nofile 開不到那麼大，怎麼調都過不了。
+            # 設成 "true" 會跳過該檢查（同時涵蓋 vm.max_map_count 與 swap，
+            # 所以這兩項必須自己先在節點上處理好：max_map_count=2000000、無 swap），
+            # 實際的 fd 需求改由 be.conf 的 min_file_descriptor_number 控制。
+            # sandbox profile 會把它設成 "true"。
+            - name: SKIP_CHECK_ULIMIT
+              value: "false"
+          ports:
+            - name: be
+              containerPort: 9060
+            - name: webserver
+              containerPort: 8040
+            - name: heartbeat
+              containerPort: 9050
+            - name: brpc
+              containerPort: 8060
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 6Gi
+          startupProbe:
+            tcpSocket:
+              port: 9050
+            periodSeconds: 5
+            failureThreshold: 90
+          readinessProbe:
+            tcpSocket:
+              port: 9050
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["bash", "-c", "/opt/apache-doris/be_prestop.sh"]
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/doris
+            - name: storage
+              mountPath: /opt/apache-doris/be/storage
+            - name: log
+              mountPath: /opt/apache-doris/be/log
+      volumes:
+        - name: conf
+          configMap:
+            name: doris-be-conf
+        - name: log
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi

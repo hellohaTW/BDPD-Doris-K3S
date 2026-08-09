@@ -1,0 +1,69 @@
+# fe_entrypoint.sh / be_entrypoint.sh 看到 CONFIGMAP_MOUNT_PATH 時，
+# 會把這個目錄裡的檔案 symlink 蓋掉 image 內的 conf/，所以這裡放的是「完整」設定檔，
+# 內容以 image 內的預設值為基礎，只調整記憶體與單節點需要的項目。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-fe-conf
+  namespace: doris
+data:
+  fe.conf: |
+    CUR_DATE=`date +%Y%m%d-%H%M%S`
+    LOG_DIR = ${DORIS_HOME}/log
+
+    # 預設是 -Xmx8192m，對這台 15GB 的機器來說太大，降到 3G。
+    JAVA_OPTS_FOR_JDK_17="-Dfile.encoding=UTF-8 -Djavax.security.auth.useSubjectCredsOnly=false -Xmx3072m -Xms3072m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=$LOG_DIR -Xlog:gc*:$LOG_DIR/fe.gc.log.$CUR_DATE:time,uptime:filecount=10,filesize=50M -Darrow.enable_null_check_for_get=false --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED --add-opens=java.management/sun.management=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.xml/com.sun.org.apache.xerces.internal.jaxp=ALL-UNNAMED"
+
+    http_port = 8030
+    rpc_port = 9020
+    query_port = 9030
+    edit_log_port = 9010
+    arrow_flight_sql_port = 8070
+
+    # Pod IP 會變，所以一定要用 FQDN 模式註冊節點。
+    enable_fqdn_mode = true
+
+    meta_dir = ${DORIS_HOME}/doris-meta
+
+    sys_log_level = INFO
+    sys_log_mode = ASYNC
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-be-conf
+  namespace: doris
+data:
+  be.conf: |
+    CUR_DATE=`date +%Y%m%d-%H%M%S`
+    LOG_DIR="${DORIS_HOME}/log/"
+
+    # BE 內嵌 JVM (Java UDF / JNI)，預設 2G 已足夠，這裡壓到 1G。
+    JAVA_OPTS_FOR_JDK_17="-Dfile.encoding=UTF-8 -Djol.skipHotspotSAAttach=true -Xmx1024m -DlogPath=$LOG_DIR/jni.log -Xlog:gc*:$LOG_DIR/be.gc.log.$CUR_DATE:time,uptime:filecount=10,filesize=50M -Djavax.security.auth.useSubjectCredsOnly=false -Dsun.java.command=DorisBE -XX:-CriticalJNINatives -XX:+IgnoreUnrecognizedVMOptions -Darrow.enable_null_check_for_get=false --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED --add-opens=java.management/sun.management=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.xml/com.sun.org.apache.xerces.internal.jaxp=ALL-UNNAMED"
+
+    JEMALLOC_CONF="percpu_arena:percpu,background_thread:true,metadata_thp:auto,muzzy_decay_ms:5000,dirty_decay_ms:5000,oversize_threshold:0,prof:true,prof_active:false,lg_prof_interval:-1,lg_extent_max_active_fit:8"
+    JEMALLOC_PROF_PRFIX="jemalloc_heap_profile_"
+
+    be_port = 9060
+    webserver_port = 8040
+    heartbeat_service_port = 9050
+    brpc_port = 8060
+    arrow_flight_sql_port = 8050
+
+    storage_root_path = ${DORIS_HOME}/storage
+
+    # BE 啟動時會檢查可用的 fd 數量。65536 是官方預設值。
+    # 在沒有 CAP_SYS_RESOURCE、nofile 開不大的環境要調低（sandbox profile 會設成 16384）。
+    min_file_descriptor_number = 65536
+
+    # 對應 Pod 的 memory limit (6Gi)，留一點空間給 JVM 與其它執行緒。
+    mem_limit = 4G
+
+    # 單機測試用：不要因為單一磁碟寫滿就把 BE 判成不可用。
+    storage_flood_stage_usage_percent = 95
+    storage_flood_stage_left_capacity_bytes = 1073741824
+
+    sys_log_level = INFO
+    aws_log_level = 2
+    azure_log_level = 4
+    AWS_EC2_METADATA_DISABLED=true

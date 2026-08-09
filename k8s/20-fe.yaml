@@ -1,0 +1,145 @@
+# Doris FE (Frontend)：中繼資料 + 查詢入口 (MySQL 協定)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: doris-fe
+  namespace: doris
+  labels:
+    app: doris-fe
+spec:
+  clusterIP: None
+  # FE 在 Ready 之前就必須能被自己與 BE 用 FQDN 解析到，否則註冊會失敗。
+  publishNotReadyAddresses: true
+  selector:
+    app: doris-fe
+  ports:
+    - name: query
+      port: 9030
+    - name: http
+      port: 8030
+    - name: rpc
+      port: 9020
+    - name: edit-log
+      port: 9010
+    - name: arrow-flight
+      port: 8070
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: doris-fe-nodeport
+  namespace: doris
+  labels:
+    app: doris-fe
+spec:
+  type: NodePort
+  selector:
+    app: doris-fe
+  ports:
+    - name: query
+      port: 9030
+      targetPort: 9030
+      nodePort: 30030
+    - name: http
+      port: 8030
+      targetPort: 8030
+      nodePort: 30080
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: doris-fe
+  namespace: doris
+spec:
+  serviceName: doris-fe
+  replicas: 1
+  selector:
+    matchLabels:
+      app: doris-fe
+  template:
+    metadata:
+      labels:
+        app: doris-fe
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: fe
+          image: apache/doris:fe-4.0.5-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - exec /opt/apache-doris/fe_entrypoint.sh doris-fe.$(POD_NAMESPACE).svc.cluster.local
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONFIGMAP_MOUNT_PATH
+              value: /etc/doris
+            # 單節點：只有 1 個 follower 參與選舉。
+            - name: ELECT_NUMBER
+              value: "1"
+            - name: FE_QUERY_PORT
+              value: "9030"
+          ports:
+            - name: query
+              containerPort: 9030
+            - name: http
+              containerPort: 8030
+            - name: rpc
+              containerPort: 9020
+            - name: edit-log
+              containerPort: 9010
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 5Gi
+          startupProbe:
+            tcpSocket:
+              port: 9030
+            periodSeconds: 5
+            failureThreshold: 90     # 首次選主最多等 60s，再加上啟動時間
+          readinessProbe:
+            tcpSocket:
+              port: 9030
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9010
+            periodSeconds: 20
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              exec:
+                command: ["bash", "-c", "/opt/apache-doris/fe_prestop.sh"]
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/doris
+            - name: meta
+              mountPath: /opt/apache-doris/fe/doris-meta
+            - name: log
+              mountPath: /opt/apache-doris/fe/log
+      volumes:
+        - name: conf
+          configMap:
+            name: doris-fe-conf
+        - name: log
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: meta
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 5Gi
